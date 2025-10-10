@@ -4,6 +4,17 @@ import tensorflow as tf
 
 import tensorflow.keras as keras
 
+from keras.src import constraints
+from keras.src import dtype_policies
+from keras.src import initializers
+from keras.src import regularizers, backend
+
+
+import tfm.nlp.layers.BlockDiagFeedforward as BlockDense
+
+from keras.initializers import VarianceScaling
+from keras.layers import Dense
+from keras.src import ops, dtype_policies
 from utils import eval_dict, replace_words
 from lbfgs import lbfgs_minimize, set_LBFGS_options
 
@@ -53,9 +64,12 @@ class PINN(tf.keras.Sequential):
         # build a network
         self.add(keras.layers.InputLayer((self.f_in,)))
         for _ in range(self.depth):
-            self.add(keras.layers.Dense(self.f_hid, activation=self.act_func))
+            #self.add(ParallelDense(self.f_hid*self.f_out, activation=self.act_func, 
+            #                        kernel_initializer=GlorotUniformBlocked(self.f_out, 42)),)#keras.layers.Dense
+            self.add(BlockDense(self.f_hid, activation=self.act_func, dropout=0, num_blocks=2))
         self.add(keras.layers.Dense(self.f_out))
         
+        '''
         self.denses = []
         # hidden layers
         for i in range(1, len(layer_sizes) - 1):
@@ -115,7 +129,7 @@ class PINN(tf.keras.Sequential):
                 )
             )
         
-        
+        '''
         # optimizer (overwrite the learning rate if necessary)
         self.lr = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=self.lr, decay_steps=1000, decay_rate=0.9
@@ -269,11 +283,6 @@ class PINN(tf.keras.Sequential):
         loss = lambda: self.eval_loss(conditions, conds_string)
         self.optimizer(self.trainable_weights, loss)
         
-from keras.src import ops
-
-
-
-#ops.ones(shape, dtype=dtype)
 
 def block_diagonal(matrices, dtype=tf.float32):
   r"""Constructs block-diagonal matrices from a list of batched 2D tensors.
@@ -318,53 +327,60 @@ def block_diagonal(matrices, dtype=tf.float32):
   blocked.set_shape(batch_shape.concatenate((blocked_rows, blocked_cols)))
   return blocked
 
-class GlorotUniformBlocked(VarianceScaling):
-    """The Glorot uniform initializer, also called Xavier uniform initializer.
 
-    Draws samples from a uniform distribution within `[-limit, limit]`, where
-    `limit = sqrt(6 / (fan_in + fan_out))` (`fan_in` is the number of input
-    units in the weight tensor and `fan_out` is the number of output units).
-
-    Examples:
-
-    >>> # Standalone usage:
-    >>> initializer = GlorotUniform()
-    >>> values = initializer(shape=(2, 2))
-
-    >>> # Usage in a Keras layer:
-    >>> initializer = GlorotUniform()
-    >>> layer = Dense(3, kernel_initializer=initializer)
+def compute_fans(shape):
+    """Computes the number of input and output units for a weight shape.
 
     Args:
-        seed: A Python integer or instance of
-            `keras.backend.SeedGenerator`.
-            Used to make the behavior of the initializer
-            deterministic. Note that an initializer seeded with an integer
-            or `None` (unseeded) will produce the same random values
-            across multiple calls. To get different random values
-            across multiple calls, use as seed an instance
-            of `keras.backend.SeedGenerator`.
+        shape: Integer shape tuple.
 
-    Reference:
-
-    - [Glorot et al., 2010](http://proceedings.mlr.press/v9/glorot10a.html)
+    Returns:
+        A tuple of integer scalars: `(fan_in, fan_out)`.
     """
+    shape = tuple(shape)
+    if len(shape) < 1:  # Just to avoid errors for constants.
+        fan_in = fan_out = 1
+    elif len(shape) == 1:
+        fan_in = fan_out = shape[0]
+    elif len(shape) == 2:
+        fan_in = shape[0]
+        fan_out = shape[1]
+    else:
+        # Assuming convolution kernels (2D, 3D, or more).
+        # kernel shape: (..., input_depth, depth)
+        receptive_field_size = 1
+        for dim in shape[:-2]:
+            receptive_field_size *= dim
+        fan_in = shape[-2] * receptive_field_size
+        fan_out = shape[-1] * receptive_field_size
+    return int(fan_in), int(fan_out)
+    
 
-    def __init__(self, seed=None):
+from keras.src.backend import random
+class GlorotUniformBlocked(VarianceScaling):
+    def __init__(self, n_blocks=1, seed=None):
         super().__init__(
             scale=1.0, mode="fan_avg", distribution="uniform", seed=seed
         )
+        self.n_blocks = n_blocks
     
     def __call__(self, shape, dtype=None):
         scale = self.scale
-        total_shape = (np.prod(shape[0]),np.prod(shape[1])) 
-        fan_in, fan_out = compute_fans(total_shape)
+        #total_shape = (np.prod(shape[0]),np.prod(shape[1])) 
+        fan_in, fan_out = compute_fans(shape)
         scale /= max(1.0, fan_in)
-        limit = math.sqrt(3.0 * scale)
+        limit = tf.math.sqrt(3.0 * scale)
         base_init = random.uniform(
-            total_shape, minval=-limit, maxval=limit, dtype=dtype, seed=self.seed
+            shape, minval=-limit, maxval=limit, dtype=dtype, seed=self.seed
         )
-        blocked = block_diagonal([ops.ones((i,j)) for i,j in zip(shape[0],shape[1])])
+        #small_shape = np.array((np.array(shape)/self.n_blocks), dtype=int)
+        #blocked = block_diagonal([ops.ones(shape) for i in range(self.n_blocks)])
+        
+        linop_blocks = (ops.ones(shape) for i in range(self.n_blocks))
+        blocked = tf.linalg.LinearOperatorBlockDiag(linop_blocks, is_non_singular=False)
+
+        print(blocked.to_dense())
+
         return blocked * base_init
 
     def get_config(self):
@@ -373,27 +389,27 @@ class GlorotUniformBlocked(VarianceScaling):
         }
 
 class ParallelDense(Dense):
-
-     def build(self, input_shape):
-        input_dim = np.sum(input_shape[-1])
+    def build(self, input_shape):
+        kernel_shape = (input_shape[-1], self.units)
         # We use `self._dtype_policy` to check to avoid issues in torch dynamo
-        is_quantized = isinstance(
-            self._dtype_policy, dtype_policies.QuantizedDTypePolicy
-        )
-        if is_quantized:
-            self.quantized_build(
-                input_shape, mode=self.dtype_policy.quantization_mode
-            )
-        if not is_quantized or self.dtype_policy.quantization_mode != "int8":
+        #is_quantized = isinstance(
+        #    self._dtype_policy, dtype_policies.QuantizedDTypePolicy
+        #)
+        #if is_quantized:
+        #    self.quantized_build(
+        #        input_shape, mode=self.dtype_policy.quantization_mode
+        #    )
+        #if not is_quantized or self.dtype_policy.quantization_mode != "int8":
             # If the layer is quantized to int8, `self._kernel` will be added
             # in `self._int8_build`. Therefore, we skip it here.
-            self._kernel = self.add_weight(
-                name="kernel",
-                shape=(input_dim, self.units),
-                initializer=self.kernel_initializer,
-                regularizer=self.kernel_regularizer,
-                constraint=self.kernel_constraint,
-            )
+        print(self.units)   
+        self._kernel = self.add_weight(
+            name="kernel",
+            shape=kernel_shape,
+            initializer=self.kernel_initializer,
+            regularizer=self.kernel_regularizer,
+            constraint=self.kernel_constraint,
+        )
         if self.use_bias:
             self.bias = self.add_weight(
                 name="bias",
@@ -404,7 +420,84 @@ class ParallelDense(Dense):
             )
         else:
             self.bias = None
-        self.input_spec = InputSpec(min_ndim=2, axes={-1: input_dim})
+        self.input_spec = InputSpec(min_ndim=2, axes={-1: input_shape[-1]})
         self.built = True
         if self.lora_rank:
             self.enable_lora(self.lora_rank)
+    
+    def add_weight(
+        self,
+        shape=None,
+        initializer=None,
+        dtype=None,
+        trainable=True,
+        autocast=True,
+        regularizer=None,
+        constraint=None,
+        aggregation="none",
+        overwrite_with_gradient=False,
+        name=None,
+    ):
+        """Add a weight variable to the layer.
+
+        Args:
+            shape: Shape tuple for the variable. Must be fully-defined
+                (no `None` entries). Defaults to `()` (scalar) if unspecified.
+            initializer: Initializer object to use to populate the initial
+                variable value, or string name of a built-in initializer
+                (e.g. `"random_normal"`). If unspecified, defaults to
+                `"glorot_uniform"` for floating-point variables and to `"zeros"`
+                for all other types (e.g. int, bool).
+            dtype: Dtype of the variable to create, e.g. `"float32"`. If
+                unspecified, defaults to the layer's variable dtype
+                (which itself defaults to `"float32"` if unspecified).
+            trainable: Boolean, whether the variable should be trainable via
+                backprop or whether its updates are managed manually. Defaults
+                to `True`.
+            autocast: Boolean, whether to autocast layers variables when
+                accessing them. Defaults to `True`.
+            regularizer: Regularizer object to call to apply penalty on the
+                weight. These penalties are summed into the loss function
+                during optimization. Defaults to `None`.
+            constraint: Contrainst object to call on the variable after any
+                optimizer update, or string name of a built-in constraint.
+                Defaults to `None`.
+            aggregation: Optional string, one of `None`, `"none"`, `"mean"`,
+                `"sum"` or `"only_first_replica"`. Annotates the variable with
+                the type of multi-replica aggregation to be used for this
+                variable when writing custom data parallel training loops.
+                Defaults to `"none"`.
+            overwrite_with_gradient: Boolean, whether to overwrite the variable
+                with the computed gradient. This is useful for float8 training.
+                Defaults to `False`.
+            name: String name of the variable. Useful for debugging purposes.
+        """
+        self._check_super_called()
+        if shape is None:
+            shape = ()
+        if dtype is not None:
+            dtype = backend.standardize_dtype(dtype)
+        else:
+            dtype = self.variable_dtype
+        if initializer is None:
+            if "float" in dtype:
+                initializer = "glorot_uniform"
+            else:
+                initializer = "zeros"
+        initializer = initializers.get(initializer)
+        with backend.name_scope(self.name, caller=self):
+            variable = backend.Variable(
+                initializer=initializer,
+                shape=shape,
+                dtype=dtype,
+                trainable=trainable,
+                autocast=autocast,
+                aggregation=aggregation,
+                name=name,
+            )
+        # Will be added to layer.losses
+        variable.regularizer = regularizers.get(regularizer)
+        variable.constraint = constraints.get(constraint)
+        variable.overwrite_with_gradient = overwrite_with_gradient
+        self._track_variable(variable)
+        return variable
