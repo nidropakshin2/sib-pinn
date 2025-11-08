@@ -11,7 +11,8 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import re
 import numbers
-import pickle
+import pickle as pkl
+import yaml
 
 def find_all_words(string):
     _len = len(string)
@@ -56,26 +57,38 @@ def gen_points(num, bounds, n_vars=None):
     return tf.Variable(tf.concat(points, axis=1))
 
 
-def gen_condition(conds, cond_name, **kwargs):
-    cond_dict = conds[cond_name]
-    x = gen_points(cond_dict["N"], cond_dict["point_area"])
-    right_side_func = eval(
-        "lambda vars: (" + cond_dict["right_side"] + ",)", kwargs | {"tf": tf}
-    )
-    c = tf.transpose(tf.convert_to_tensor(right_side_func(x), dtype=tf.float32))
+def gen_condition(cond_dict, model_args, **kwargs):
+    def default_xc():
+        x = gen_points(cond_dict["N"], cond_dict["point_area"])
+        right_side_line = line_parser(cond_dict["right_side"], **kwargs)
+        right_side_func = eval(
+        "lambda vars: (" + right_side_line + ",)", kwargs | {"tf": tf}
+        )
+        c = tf.convert_to_tensor(right_side_func(x), dtype=tf.float32)
+        return x, c
+    try: 
+        if cond_dict['raw_data_condition']:
+            with open(cond_dict['filename'], mode="rb") as datafile:
+                data = pkl.load(datafile)
+            x = tf.convert_to_tensor(np.array((data['points'])), dtype=tf.float32)
+            c = tf.convert_to_tensor(np.array((data['data'])), dtype=tf.float32)
+        else:
+            x, c = default_xc()
+    except KeyError:
+            x, c = default_xc()
+    x = x*2/(model_args['in_ub']-model_args['in_lb']) - 1 #normalization
     eq_string = line_parser("( " + cond_dict["eq_string"] + " ,)", **kwargs)
     if "d/d" in cond_dict["eq_string"]:
         compute_grads = True
     else:
         compute_grads = False
-    eq_string = compile(eq_string, "<string>", "eval",optimize=1)
+    eq_string = compile(eq_string, "<string>", "eval")
     return (x, c, eq_string, compute_grads)
-
 
 def eval_dict(d, kwargs={}, recursion=0):
     if recursion == 0:
         for key in d.keys():
-            if key not in ["eq_string", "act", "right_side"]:
+            if key not in ["eq_string", "act", "right_side", "filename"]:
                 if isinstance(d[key], numbers.Number):
                     #d[key] = tf.cast(d[key], tf.float32)
                     pass
@@ -135,7 +148,7 @@ def line_parser(eq_string, func_names, var_names=default_var_names, **kwargs):
             res += apply_ops(ops_stack, splited[i], var_dict)
             ops_stack = []
         elif splited[i] in var_names:
-            res += "_x[:," + str(var_dict[splited[i]]) + "]"
+            res += "vars[:," + str(var_dict[splited[i]]) + "]"
         else:
             res += splited[i]
     return res
@@ -175,6 +188,46 @@ def plotting(func, xlabel, ylabel, title=''):
 def plot_compari(epoch, x, y, u_inf)
 """
 
+def plot_comparison1d(
+    epoch,
+    x,
+    y,
+    u_inf,
+    xlabel,
+    ylabel,
+    title="",
+):
+
+# fig, ax = plt.subplots(figsize=(4, 4))
+    # ax.set_xticks
+    xticks = (np.max(x) - np.min(x)) / 4.0
+    plt.plot(x, u_inf)  # , vmin=umin, vmax=umax)
+    #plt.xticks(np.arange(np.min(x), np.max(x) + 1e-6, (np.max(x)-np.min(x))/5), xticks)
+    plt.xticks(np.arange(np.min(x), np.max(x) + 1e-6, xticks))
+    plt.xlim(np.min(x), np.max(x))
+    plt.xlabel(xlabel)
+    #plt.title("inference")
+
+    plt.savefig("./results/comparison_" + title + "_" + str(epoch) + ".pdf", dpi=300)
+    plt.clf()
+    plt.close()
+    with open('./results/data_'+ title + "_" + str(epoch) + ".txt"	, 'wb') as f:
+        pkl.dump((x,y,u_inf), f)	
+        #pkl.dump(data, f)
+        #	pkl.dump(data, f)
+        #print(str(x), file=f)
+        #print(str(y), file=f)
+        #print(str(u_inf), file=f)
+       
+def load_data(title, epoch):
+    with open('./results/data_'+ title + "_" + str(epoch) + ".txt"	, 'b') as f:
+        x,y,u_inf = pkl.load(f)
+    plot_comparison(epoch,x,y,u_inf,
+                        xlabel='',
+                        ylabel='',
+                        title=title)
+    return x,y,u_inf
+
 
 def plot_comparison(
     epoch,
@@ -203,28 +256,19 @@ def plot_comparison(
     plt.ylim(np.min(y), np.max(y))
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
-    plt.title("inference")
+    #plt.title("inference")
 
-    plt.savefig("./results/comparison_" + title + "_" + str(epoch) + ".png", dpi=300)
+    plt.savefig("./results/comparison_" + title + "_" + str(epoch) + ".pdf", dpi=300)
     plt.clf()
     plt.close()
     with open('./results/data_'+ title + "_" + str(epoch) + ".txt"	, 'wb') as f:
-        pickle.dump((x,y,u_inf), f)	
-        #pickle.dump(data, f)
-        #	pickle.dump(data, f)
+        pkl.dump((x,y,u_inf), f)	
+        #pkl.dump(data, f)
+        #	pkl.dump(data, f)
         #print(str(x), file=f)
         #print(str(y), file=f)
         #print(str(u_inf), file=f)
        
-def load_data(title):
-    with open('./results/data_'+ title + "_" + str(epoch) + ".txt"	, 'b') as f:
-        x,y,u_inf = pickle.load(f)
-    plot_comparison(epoch,x,y,u_inf,
-                        xlabel='',
-                        ylabel='',
-                        title=title)
-    return x,y,u_inf
-
 def plot_loss_curve(epoch, logs, labels):
     epoch_log = logs[0]
     plt.figure(figsize=(4, 4))
@@ -240,6 +284,6 @@ def plot_loss_curve(epoch, logs, labels):
     plt.yscale("log")
     plt.grid(alpha=0.5)
     plt.tight_layout()
-    plt.savefig("./results/loss_curve_" + str(epoch) + ".png", dpi=300)
+    plt.savefig("./results/loss_curve_" + str(epoch) + ".pdf", dpi=300)
     plt.clf()
     plt.close()
