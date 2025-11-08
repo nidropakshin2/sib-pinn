@@ -1,0 +1,46 @@
+ARGS:
+  epochs: 10000
+  batch_size: -1
+  patience: 1000
+
+MODEL:
+  f_hid: 20
+  depth: 5
+  in_lb: '[-1.]'
+  in_ub: '[1.]'
+  act: tanh
+  seed: 42
+  lr: 0.0001
+
+NS:
+  nx: [100]
+
+IN_VAR_NAMES:
+ [x]
+
+OUT_VAR_NAMES:
+ [u]
+
+CUSTOM_CONSTS:
+  beta: 5
+
+CUSTOM_FUNCS:
+  exact: x*0
+
+CONDS:
+  pde:
+     eq_string: (d/dx) u - ( 0.* x - 1.)
+     right_side: 0.* x
+     point_area: '[[tmin, tmax]]'
+     N: 1e3
+  border1:
+     eq_string: 100*( u - ( 0.* x + 1.) )
+     right_side: 0* x
+     point_area: '[[tmin, tmin]]'
+     N: 1e1
+  #border1:
+  #   eq_string: u
+  #   right_side: 0* x
+  #   point_area: '[[tmax, tmax]]'
+  #   N: 1e2
+

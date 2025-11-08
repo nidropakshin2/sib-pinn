@@ -5,7 +5,7 @@ import tensorflow as tf
 import tensorflow.keras as keras
 
 from utils import eval_dict, replace_words
-from lbfgs import lbfgs_minimize, set_LBFGS_options
+#from lbfgs import lbfgs_minimize, set_LBFGS_options
 
 class PINN(tf.keras.Sequential):
     def __init__(
@@ -55,76 +55,15 @@ class PINN(tf.keras.Sequential):
         for _ in range(self.depth):
             self.add(keras.layers.Dense(self.f_hid, activation=self.act_func))
         self.add(keras.layers.Dense(self.f_out))
-        
-        self.denses = []
-        # hidden layers
-        for i in range(1, len(layer_sizes) - 1):
-            prev_layer_size = layer_sizes[i - 1]
-            curr_layer_size = layer_sizes[i]
-            # Non-Shared layers
-            if isinstance(curr_layer_size, (list, tuple)):
-                if len(curr_layer_size) != n_output:
-                    raise ValueError(
-                        "number of sub-layers should equal number of network outputs"
-                    )
-                # e.g. [8, 8, 8] -> [16, 16, 16] or 64 -> [8, 8, 8]
-                self.denses.append(
-                    [
-                        tf.keras.layers.Dense(
-                            units,
-                            activation=activation,
-                            kernel_initializer=initializer,
-                            kernel_regularizer=self.regularizer,
-                        )
-                        for units in curr_layer_size
-                    ]
-                )
-            # Shared layers
-            else:  # e.g. 64 -> 64
-                if not isinstance(prev_layer_size, int):
-                    raise ValueError(
-                        "cannot rejoin parallel subnetworks after splitting"
-                    )
-                self.denses.append(
-                    tf.keras.layers.Dense(
-                        curr_layer_size,
-                        activation=activation,
-                        kernel_initializer=initializer,
-                        kernel_regularizer=self.regularizer,
-                    )
-                )
 
-        # output layers
-        if isinstance(layer_sizes[-2], (list, tuple)):  # e.g. [3, 3, 3] -> 3
-            self.denses.append(
-                [
-                    tf.keras.layers.Dense(
-                        1,
-                        kernel_initializer=initializer,
-                        kernel_regularizer=self.regularizer,
-                    )
-                    for _ in range(n_output)
-                ]
-            )
-        else:
-            self.denses.append(
-                tf.keras.layers.Dense(
-                    n_output,
-                    kernel_initializer=initializer,
-                    kernel_regularizer=self.regularizer,
-                )
-            )
-        
-        
         # optimizer (overwrite the learning rate if necessary)
         self.lr = tf.keras.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=self.lr, decay_steps=1000, decay_rate=0.9
         )
         
-        set_LBFGS_options()
-        self.optimizer = lbfgs_minimize
-        
-        #self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
+        #set_LBFGS_options()
+        #self.optimizer = 
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
 
         # system params
         self.custom_vars = {}
@@ -186,19 +125,11 @@ class PINN(tf.keras.Sequential):
                 del tp2
             u_xx = tp1.batch_jacobian(u_x, vars)
             del tp1
-            # try:
             g = eval(eq_string, locals() | self.custom_vars | {"tf": tf})
-            # except:
-            #    raise ValueError(eq_string)
-            g = tf.transpose(tf.convert_to_tensor(g, dtype=tf.float32))
         else:
             u_ = self(vars, training=True)
-            self.var_names
-            try:
-                g = eval(eq_string, locals() | self.custom_vars | {"tf": tf})
-            except:  # SyntaxError:
-                raise SyntaxError("The line has an error\n" + eq_string)
-            g = tf.transpose(tf.convert_to_tensor(g, dtype=tf.float32))
+            g = eval(eq_string, locals() | self.custom_vars | {"tf": tf})    
+        g = tf.convert_to_tensor(g, dtype=tf.float32)
         return u_, g
 
     @tf.function
@@ -249,7 +180,8 @@ class PINN(tf.keras.Sequential):
         with tf.GradientTape(persistent=False, watch_accessed_variables=True) as tp:
             #tp.watch(self.trainable_weights)
             losses = tf.cast(eval(conds_string), tf.float32)
-            losses_normed = self.normalize_losses(losses)
+            #losses_normed = self.normalize_losses(losses)
+            losses_normed = losses
             grads = tp.jacobian(losses_normed, self.trainable_weights)
         del tp
         #self.update_gammas(grads)
@@ -267,144 +199,5 @@ class PINN(tf.keras.Sequential):
     #@tf.function
     def train_lbfgs(self, conditions, conds_string):
         loss = lambda: self.eval_loss(conditions, conds_string)
-        self.optimizer(self.trainable_weights, loss)
-        
-from keras.src import ops
-
-
-
-#ops.ones(shape, dtype=dtype)
-
-def block_diagonal(matrices, dtype=tf.float32):
-  r"""Constructs block-diagonal matrices from a list of batched 2D tensors.
-
-  Args:
-    matrices: A list of Tensors with shape [..., N_i, M_i] (i.e. a list of
-      matrices with the same batch dimension).
-    dtype: Data type to use. The Tensors in `matrices` must match this dtype.
-  Returns:
-    A matrix with the input matrices stacked along its main diagonal, having
-    shape [..., \sum_i N_i, \sum_i M_i].
-
-  """
-  matrices = [tf.convert_to_tensor(matrix, dtype=dtype) for matrix in matrices]
-  blocked_rows = tf.Dimension(0)
-  blocked_cols = tf.Dimension(0)
-  batch_shape = tf.TensorShape(None)
-  for matrix in matrices:
-    full_matrix_shape = matrix.get_shape().with_rank_at_least(2)
-    batch_shape = batch_shape.merge_with(full_matrix_shape[:-2])
-    blocked_rows += full_matrix_shape[-2]
-    blocked_cols += full_matrix_shape[-1]
-  ret_columns_list = []
-  for matrix in matrices:
-    matrix_shape = tf.shape(matrix)
-    ret_columns_list.append(matrix_shape[-1])
-  ret_columns = tf.add_n(ret_columns_list)
-  row_blocks = []
-  current_column = 0
-  for matrix in matrices:
-    matrix_shape = tf.shape(matrix)
-    row_before_length = current_column
-    current_column += matrix_shape[-1]
-    row_after_length = ret_columns - current_column
-    row_blocks.append(tf.pad(
-        tensor=matrix,
-        paddings=tf.concat(
-            [tf.zeros([tf.rank(matrix) - 1, 2], dtype=tf.int32),
-             [(row_before_length, row_after_length)]],
-            axis=0)))
-  blocked = tf.concat(row_blocks, -2)
-  blocked.set_shape(batch_shape.concatenate((blocked_rows, blocked_cols)))
-  return blocked
-
-class GlorotUniformBlocked(VarianceScaling):
-    """The Glorot uniform initializer, also called Xavier uniform initializer.
-
-    Draws samples from a uniform distribution within `[-limit, limit]`, where
-    `limit = sqrt(6 / (fan_in + fan_out))` (`fan_in` is the number of input
-    units in the weight tensor and `fan_out` is the number of output units).
-
-    Examples:
-
-    >>> # Standalone usage:
-    >>> initializer = GlorotUniform()
-    >>> values = initializer(shape=(2, 2))
-
-    >>> # Usage in a Keras layer:
-    >>> initializer = GlorotUniform()
-    >>> layer = Dense(3, kernel_initializer=initializer)
-
-    Args:
-        seed: A Python integer or instance of
-            `keras.backend.SeedGenerator`.
-            Used to make the behavior of the initializer
-            deterministic. Note that an initializer seeded with an integer
-            or `None` (unseeded) will produce the same random values
-            across multiple calls. To get different random values
-            across multiple calls, use as seed an instance
-            of `keras.backend.SeedGenerator`.
-
-    Reference:
-
-    - [Glorot et al., 2010](http://proceedings.mlr.press/v9/glorot10a.html)
-    """
-
-    def __init__(self, seed=None):
-        super().__init__(
-            scale=1.0, mode="fan_avg", distribution="uniform", seed=seed
-        )
-    
-    def __call__(self, shape, dtype=None):
-        scale = self.scale
-        total_shape = (np.prod(shape[0]),np.prod(shape[1])) 
-        fan_in, fan_out = compute_fans(total_shape)
-        scale /= max(1.0, fan_in)
-        limit = math.sqrt(3.0 * scale)
-        base_init = random.uniform(
-            total_shape, minval=-limit, maxval=limit, dtype=dtype, seed=self.seed
-        )
-        blocked = block_diagonal([ops.ones((i,j)) for i,j in zip(shape[0],shape[1])])
-        return blocked * base_init
-
-    def get_config(self):
-        return {
-            "seed": serialization_lib.serialize_keras_object(self._init_seed)
-        }
-
-class ParallelDense(Dense):
-
-     def build(self, input_shape):
-        input_dim = np.sum(input_shape[-1])
-        # We use `self._dtype_policy` to check to avoid issues in torch dynamo
-        is_quantized = isinstance(
-            self._dtype_policy, dtype_policies.QuantizedDTypePolicy
-        )
-        if is_quantized:
-            self.quantized_build(
-                input_shape, mode=self.dtype_policy.quantization_mode
-            )
-        if not is_quantized or self.dtype_policy.quantization_mode != "int8":
-            # If the layer is quantized to int8, `self._kernel` will be added
-            # in `self._int8_build`. Therefore, we skip it here.
-            self._kernel = self.add_weight(
-                name="kernel",
-                shape=(input_dim, self.units),
-                initializer=self.kernel_initializer,
-                regularizer=self.kernel_regularizer,
-                constraint=self.kernel_constraint,
-            )
-        if self.use_bias:
-            self.bias = self.add_weight(
-                name="bias",
-                shape=(self.units,),
-                initializer=self.bias_initializer,
-                regularizer=self.bias_regularizer,
-                constraint=self.bias_constraint,
-            )
-        else:
-            self.bias = None
-        self.input_spec = InputSpec(min_ndim=2, axes={-1: input_dim})
-        self.built = True
-        if self.lora_rank:
-            self.enable_lora(self.lora_rank)
+        res = lbfgs_minimize(self.trainable_weights, loss)
+        return res

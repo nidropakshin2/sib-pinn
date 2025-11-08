@@ -66,7 +66,7 @@ def gen_condition(cond_dict, model_args, **kwargs):
         )
         c = tf.convert_to_tensor(right_side_func(x), dtype=tf.float32)
         return x, c
-    try: 
+    try:
         if cond_dict['raw_data_condition']:
             with open(cond_dict['filename'], mode="rb") as datafile:
                 data = pkl.load(datafile)
@@ -82,6 +82,7 @@ def gen_condition(cond_dict, model_args, **kwargs):
         compute_grads = True
     else:
         compute_grads = False
+    print(eq_string)
     eq_string = compile(eq_string, "<string>", "eval")
     return (x, c, eq_string, compute_grads)
 
