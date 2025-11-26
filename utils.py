@@ -274,7 +274,8 @@ def plot_loss_curve(epoch, logs, labels):
     epoch_log = logs[0]
     plt.figure(figsize=(4, 4))
     for log, label in zip(logs[1:], labels[1:]):
-        plt.plot(epoch_log, log, ls="-", alpha=0.7, label=label)  # , c="k")
+        # print("utils: plot_loss_curve: loss logs ", log)
+        plt.plot(np.arange(len(log)), log, ls="-", alpha=0.7, label=label)  # , c="k")
     # plt.plot(epoch_log, loss_pde_log, ls="--", alpha=.3, label="loss_pde", c="tab:blue")
     # plt.plot(epoch_log, loss_ic_log,  ls="--", alpha=.3, label="loss_ic",  c="tab:orange")
     # plt.plot(epoch_log, loss_bc_log,  ls="--", alpha=.3, label="loss_bc",  c="tab:green")
@@ -288,3 +289,82 @@ def plot_loss_curve(epoch, logs, labels):
     plt.savefig("./results/loss_curve_" + str(epoch) + ".pdf", dpi=300)
     plt.clf()
     plt.close()
+
+"""
+Функция для визуализации процесса обучения в виде gif-анимации 
+"""
+
+# from pdf2image import convert_from_path
+# from PIL import Image
+# from typing import List, Union
+# import os
+
+# def pdfs_to_gif(
+#     pdf_files: Union[str, List[str]],
+#     output_gif: str = "animation.gif",
+#     duration: int = 500,
+#     loop: int = 0,
+#     dpi: int = 150,
+#     use_pdftocairo: bool = False,
+#     sort_files: bool = True
+# ) -> None:
+#     """
+#     Конвертирует несколько PDF-файлов в GIF-анимацию.
+    
+#     Args:
+#         pdf_files: Путь к PDF-файлу или список путей к PDF-файлам
+#         output_gif: Имя выходного GIF-файла
+#         duration: Длительность каждого кадра в миллисекундах
+#         loop: Количество циклов (0 = бесконечно)
+#         dpi: Разрешение для конвертации PDF (качество изображения)
+#         use_pdftocairo: Использовать pdftocairo для лучшей обработки векторной графики
+#         sort_files: Сортировать ли файлы по имени перед обработкой
+#     """
+    
+#     # Если передан один файл, преобразуем в список
+#     if isinstance(pdf_files, str):
+#         pdf_files = [pdf_files]
+    
+#     # Сортируем файлы по имени, если требуется
+#     if sort_files:
+#         pdf_files = sorted(pdf_files)
+    
+#     # Конвертируем каждый PDF в изображения и собираем все кадры
+#     frames = []
+#     for pdf_file in pdf_files:
+#         if not os.path.exists(pdf_file):
+#             print(f"Предупреждение: файл {pdf_file} не найден, пропускаем")
+#             continue
+            
+#         try:
+#             images = convert_from_path(
+#                 pdf_file, 
+#                 dpi=dpi, 
+#                 use_pdftocairo=use_pdftocairo
+#             )
+#             frames.extend(images)
+#             print(f"Обработан {pdf_file} - добавлено {len(images)} кадров")
+#         except Exception as e:
+#             print(f"Ошибка при обработке {pdf_file}: {e}")
+#             continue
+    
+#     if not frames:
+#         print("Ошибка: не удалось обработать ни одного PDF-файла")
+#         return
+    
+#     # Сохраняем как GIF
+#     try:
+#         frames[0].save(
+#             output_gif,
+#             save_all=True,
+#             append_images=frames[1:],
+#             duration=duration,
+#             loop=loop,
+#             optimize=True  # Оптимизация размера файла
+#         )
+#         print(f"Успешно создан GIF: {output_gif}")
+#         print(f"Общее количество кадров: {len(frames)}")
+#         print(f"Размер каждого кадра: {duration} мс")
+        
+#     except Exception as e:
+#         print(f"Ошибка при создании GIF: {e}")

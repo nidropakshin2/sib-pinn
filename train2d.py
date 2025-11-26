@@ -117,6 +117,7 @@ def main():
         # gradient descent
         loss_glb, losses = model.train(conditions, cond_string)
         # log
+        losses_logs = np.append(losses_logs, np.expand_dims(losses, axis=0).T, axis=1)
         t1 = time.perf_counter()
         elps = t1 - t0
         #print(loss_glb)
@@ -167,7 +168,7 @@ def main():
             }
             time_moment = int(ns["nx"][1]/2)
             for func, title in zip(u_n, func_names):
-                #plot_comparison(u_inf=func, title=title, **plot_commons)
+
                 plot_comparison(u_inf=func, title=title, **plot_commons)
                 
                 #    plot_comparison(u_inf=exact,title=title+'exact', **plot_commons)
