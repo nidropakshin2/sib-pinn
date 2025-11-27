@@ -65,7 +65,7 @@ class PINN(tf.keras.Sequential):
 
         # optimizer (overwrite the learning rate if necessary)
         self.lr = tf.keras.optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=self.lr, decay_steps=2000, decay_rate=0.7
+            initial_learning_rate=self.lr, decay_steps=1000, decay_rate=0.9
         )
         
         #set_LBFGS_options()
@@ -164,7 +164,7 @@ class PINN(tf.keras.Sequential):
 
     def init_dynamical_normalisastion(self, num_of_losses):
         self.gammas = tf.Variable(tf.ones(num_of_losses), tf.float32)
-    
+
     @tf.autograph.experimental.do_not_convert
     def update_gammas(self, grads):
         # TODO: реализовать проверку совпадения первых размерностей всех градиентов
