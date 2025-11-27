@@ -21,8 +21,9 @@ class PINN(tf.keras.Sequential):
         w_init="Glorot",
         b_init="zeros",
         act="tanh",
-        dynamic_normalisation=True,
         lr=1e-3,
+        dynamic_normalisation=None,
+        beta=0.01,
         seed=42,
     ):
         super().__init__()
@@ -44,7 +45,12 @@ class PINN(tf.keras.Sequential):
 
         self.act_func = self.init_act_func(self.act)
 
+        # Note that it assumes that first element of var_names belongs to pde
         self.dynamic_normalisation = dynamic_normalisation
+        if 0 <= beta and beta <= 1: 
+            self.beta = beta
+        else:
+            raise ValueError("parameter beta must be between 0 and 1")
 
         # seed
         os.environ["PYTHONHASHSEED"] = str(self.seed)
@@ -59,7 +65,7 @@ class PINN(tf.keras.Sequential):
 
         # optimizer (overwrite the learning rate if necessary)
         self.lr = tf.keras.optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=self.lr, decay_steps=1000, decay_rate=0.9
+            initial_learning_rate=self.lr, decay_steps=2000, decay_rate=0.7
         )
         
         #set_LBFGS_options()
@@ -158,44 +164,48 @@ class PINN(tf.keras.Sequential):
 
     def init_dynamical_normalisastion(self, num_of_losses):
         self.gammas = tf.Variable(tf.ones(num_of_losses), tf.float32)
-
-    @tf.function
-    def update_gammas(self, grads, upd_func="static", beta=0.01, *other):
+    
+    @tf.autograph.experimental.do_not_convert
+    def update_gammas(self, grads):
         # TODO: реализовать проверку совпадения первых размерностей всех градиентов
         # dims = set([tf.shape(v)[0] for v in grads])
         # if len(dims) > 1:
         #     raise ValueError(f"All tensors must have common first dimension, got: {dims}")
         
-        # Приведем градиенты в векторный вид, 
-        # т.е. теперь все производные выстроены в одну строчку длины,
-        # равной суммарному кол-ву обучаемых параметров модели
-        grd = tf.concat([tf.reshape(v, [tf.shape(v)[0], -1]) for v in grads], axis=1)
+        if self.dynamic_normalisation:
+            # Приведем градиенты в векторный вид, 
+            # т.е. теперь все производные выстроены в одну строчку длины,
+            # равной суммарному кол-ву обучаемых параметров модели
+        
+            grd = tf.concat([tf.reshape(v, [tf.shape(v)[0], -1]) for v in grads], axis=1)
             
-        # We suppose here that the first grad is from PDE loss
-        if upd_func == "max_avg":
-            grd_mean_abs = tf.reduce_mean(tf.abs(grd), axis=1)
-            gammas_cup = tf.reduce_max(tf.abs(grd[0])) * tf.divide(tf.ones_like(grd_mean_abs), self.gammas * grd_mean_abs)
+            # We assume here that the first grad is from PDE loss
+            match self.dynamic_normalisation:
+                case "max_avg":
+                    grd_mean_abs = tf.reduce_mean(tf.abs(grd), axis=1)
+                    gammas_cup = tf.reduce_max(tf.abs(grd[0])) * tf.divide(tf.ones_like(grd_mean_abs), self.gammas * grd_mean_abs)
 
-        elif upd_func == "inv_dir":
-            grd = tf.reduce_std(grd, axis=1)
-            gammas_cup = tf.reduce_max(grd) * tf.divide(tf.ones_like(grd), grd)
+                case "inv_dir":
+                    grd = tf.reduce_std(grd, axis=1)
+                    gammas_cup = tf.reduce_max(grd) * tf.divide(tf.ones_like(grd), grd)
         
-        elif upd_func == "dyn_norm": 
-            grd = tf.norm(grd, axis=1)
-            gammas_cup = tf.reduce_max(grd) * tf.divide(tf.ones_like(grd), grd)
-        
-        self.gammas.assign(beta * tf.math.abs(gammas_cup) + (1 - beta) * self.gammas)
+                case "dyn_norm": 
+                    grd = tf.norm(grd, axis=1)
+                    gammas_cup = tf.reduce_max(grd) * tf.divide(tf.ones_like(grd), grd)
+                case _:
+                    raise NotImplementedError(f"update_gammas has no dynamical normalisation option '{self.dynamic_normalisation}'")
+            self.gammas.assign(self.beta * gammas_cup + (1 - self.beta) * self.gammas)
 
     @tf.function
     def train(self, conditions, conds_string):
         with tf.GradientTape(persistent=False, watch_accessed_variables=True) as tp:
-            #tp.watch(self.trainable_weights)
+
             losses = tf.cast(eval(conds_string), tf.float32)
             losses_normed = self.normalize_losses(losses)
             
             grads = tp.jacobian(losses_normed, self.trainable_weights)
         del tp
-        self.update_gammas(grads, "dyn_norm")
+        self.update_gammas(grads)
         loss_glb = tf.math.reduce_sum(losses_normed)
         grad = [tf.reduce_sum(v, axis=0) for v in grads]
         self.optimizer.apply_gradients(zip(grad, self.trainable_weights))
