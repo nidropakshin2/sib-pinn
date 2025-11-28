@@ -1,13 +1,147 @@
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import numpy as np
 import tensorflow as tf
-
+import yaml
 import tensorflow.keras as keras
+import traceback
 
-from utils import eval_dict, replace_words
-#from lbfgs import lbfgs_minimize, set_LBFGS_options
 
-class PINN(tf.keras.Sequential):
+from pinn_base import PINN
+from utils import (
+    eval_dict, 
+    replace_words,
+    make_logger,
+    eval_dict,
+)
+
+
+
+class WaveAct(tf.keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.w1 = self.add_weight(
+            name="w1",
+            shape=(),
+            initializer="random_normal",
+            trainable=True
+        )
+        self.w2 = self.add_weight(
+            name="w2", 
+            shape=(),
+            initializer="random_normal",
+            trainable=True
+        )
+        super().build(input_shape)
+
+    def call(self, inputs):
+        return self.w1 * tf.math.sin(inputs) + self.w2 * tf.math.cos(inputs)
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+
+def TestWaveAct(show=False):
+    try:
+        act_func = WaveAct()
+        x = tf.Variable([1.3, 0.7, 2.4, 0.5, -1.1])
+        with tf.GradientTape(persistent=True) as tape:    
+            y = act_func(x)
+            grad = tape.gradient(y, x)
+            if show:
+                tf.print(y, grad, sep="\n")
+        del tape
+        return True
+    except:
+        return False
+
+
+class FourierPositionalEmbedding(tf.keras.layers.Layer):
+    def __init__(self, f_in, f_hid, f_out, **kwargs):
+        super().__init__(**kwargs)
+
+        self.f_out = f_out
+        self.f_hid = f_hid
+        self.fourier_emb = tf.keras.layers.Dense(self.f_out, activation="tanh")
+        self.pos_emb = tf.keras.layers.Dense(self.f_out)
+        self.B = tf.random.uniform((f_in, self.f_hid))
+
+    def build(self, f_in):
+        super().build(f_in)
+
+    def call(self, x):
+        # tf.print(tf.shape(x), tf.shape(self.B))
+        z = 2 * np.pi * tf.matmul(x, self.B)
+        f = tf.concat([tf.sin(z), tf.cos(z)], axis=-1)
+        emb_f = self.fourier_emb(f)
+        emb_p = self.pos_emb(x)
+        return emb_f + emb_p
+    
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], self.f_out)
+
+
+def TestFourierPositionalEmbedding(show=False):
+    try:
+        x = tf.transpose(tf.random.uniform((2, 5), dtype=tf.double))
+        t = tf.transpose([tf.linspace(start=0, stop=1, num=5)])
+        spacetime = tf.concat([t, x], axis=-1)
+        FourierLayer = FourierPositionalEmbedding(3, 4, 4)
+    
+        with tf.GradientTape(persistent=True) as tape:    
+            y = FourierLayer(spacetime)
+            grad = tape.gradient(y, x)
+            if show:
+                tf.print(y, grad, sep="\n")
+        del tape
+        return True
+    except:
+        return False
+
+
+class WaveletLayer(tf.keras.layers.Layer):
+    def __init__(self, f_in, f_out, **kwargs):
+        super().__init__(**kwargs)
+        self.f_in = f_in
+        self.f_out = f_out
+        
+    def build(self, f_in):
+        self.lin = self.add_weight(
+            name="Linear",
+            shape=(self.f_in, self.f_out),
+            initializer="random_uniform",
+            trainable=True
+        )
+        self.act = WaveAct()
+        super().build(f_in)
+    
+    def call(self, x):
+        out = self.act(tf.matmul(x, self.lin))
+        return out
+
+
+def TestWaveletLayer(show=False):
+    try:
+        x = tf.transpose(tf.random.uniform((2, 5), dtype=tf.double))
+        t = tf.transpose([tf.linspace(start=0, stop=1, num=5)])
+        spacetime = tf.concat([t, x], axis=-1)
+        Wavelet = WaveletLayer(f_in=3, f_out=2)
+    
+        with tf.GradientTape(persistent=True) as tape:    
+            y = Wavelet(spacetime)
+            grad = tape.gradient(y, x)
+            if show:
+                tf.print(y, grad, sep="\n")
+        del tape
+        return True
+    except Exception as e:
+        print(f"\n{type(e).__name__}: {e}\n")
+        traceback.print_exc() 
+        return False
+
+class SI_PINN(tf.keras.Sequential):
     def __init__(
         self,
         f_hid,
@@ -20,7 +154,7 @@ class PINN(tf.keras.Sequential):
         b_init="zeros",
         act="tanh",
         lr=1e-3,
-        dynamic_normalisation=None,
+        dynamic_normalisation="dyn_norm",
         beta=0.01,
         seed=42,
     ):
@@ -56,14 +190,18 @@ class PINN(tf.keras.Sequential):
         tf.random.set_seed(self.seed)
 
         # build a network
-        self.add(keras.layers.InputLayer((self.f_in,)))
+        self.add(FourierPositionalEmbedding(f_in=self.f_in, 
+                                            f_hid=self.f_hid, 
+                                            f_out=self.f_out, 
+                                            input_shape=(self.f_in,)))
         for _ in range(self.depth):
             self.add(keras.layers.Dense(self.f_hid, activation=self.act_func))
+        self.add(WaveletLayer(f_in=self.f_hid, f_out=self.f_hid))
         self.add(keras.layers.Dense(self.f_out))
 
         # optimizer (overwrite the learning rate if necessary)
         self.lr = tf.keras.optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=self.lr, decay_steps=3000, decay_rate=0.7
+            initial_learning_rate=self.lr, decay_steps=1000, decay_rate=0.9
         )
         
         #set_LBFGS_options()
@@ -184,7 +322,7 @@ class PINN(tf.keras.Sequential):
                     gammas_cup = tf.reduce_max(tf.abs(grd[0])) * tf.divide(tf.ones_like(grd_mean_abs), self.gammas * grd_mean_abs)
 
                 case "inv_dir":
-                    grd = tf.reduce_std(grd, axis=1)
+                    grd = tf.math.reduce_std(grd, axis=1)
                     gammas_cup = tf.reduce_max(grd) * tf.divide(tf.ones_like(grd), grd)
         
                 case "dyn_norm": 
@@ -220,3 +358,102 @@ class PINN(tf.keras.Sequential):
         loss = lambda: self.eval_loss(conditions, conds_string)
         res = lbfgs_minimize(self.trainable_weights, loss)
         return res
+
+
+
+class SI_PINN_experimental(PINN):
+    def __init__(  
+        self,
+        f_hid,
+        depth,
+        in_lb,
+        in_ub,
+        var_names,
+        func_names,
+        w_init="Glorot",
+        b_init="zeros",
+        act="tanh",
+        lr=1e-3,
+        dynamic_normalisation=None,
+        beta=0.01,
+        seed=42,
+    ):
+        super().__init__(
+            f_hid,
+            depth,
+            in_lb,
+            in_ub,
+            var_names,
+            func_names,
+            w_init,
+            b_init,
+            act,
+            lr,
+            dynamic_normalisation,
+            beta,
+            seed
+        )
+
+        self.layers = []
+
+        # self.add(keras.layers.InputLayer((self.f_in,)))
+        self.add(FourierPositionalEmbedding(self.f_in, f_hid=self.f_hid, f_out=self.f_out))
+        for _ in range(self.depth):
+            self.add(keras.layers.Dense(self.f_hid, activation=self.act_func))
+        self.add(WaveletLayer(f_in=self.f_hid, f_hid=self.f_hid, f_out=self.f_hid, depth=2))
+        self.add(keras.layers.Dense(self.f_out))
+
+
+def TestSI_PINN(show=False):
+    try:
+        filename = "./settings/sir-controlled (Copy).yaml"
+
+        # read settings
+        with open(filename, mode="r") as file:
+            settings = yaml.safe_load(file)
+
+        # run hyperparameters args
+        logger_path = make_logger("seed: in model")
+        args = eval_dict(settings["ARGS"])
+
+        # ======model=======
+
+        model_args = eval_dict(settings["MODEL"], {"tf": tf, "": np})
+
+        for key in model_args.keys():
+            if isinstance(model_args[key], list):
+                model_args[key] = tf.constant(model_args[key], tf.float32)
+
+        var_names = settings["IN_VAR_NAMES"]
+        func_names = settings["OUT_VAR_NAMES"]
+        model = PINN(var_names=var_names, func_names=func_names, **(model_args))
+        model.init_custom_vars(
+            dict_consts=settings["CUSTOM_CONSTS"],
+            dict_funcs=settings["CUSTOM_FUNCS"],
+            var_names=var_names,
+        )
+
+
+        model = SI_PINN(var_names=var_names, func_names=func_names, **(model_args))
+        if show:
+            tf.print(model.summary())
+        return True
+    except Exception as e:
+        print(f"\n{type(e).__name__}: {e}\n")
+        traceback.print_exc() 
+        return False
+
+
+def testing_wrapper(func_name, test_func, show=False):
+    print(f"\nTest {func_name}: ")
+    if test_func(show=show):
+        print("Successfull\n")
+    else:
+        print("Failed\n")
+
+
+if __name__ == "__main__":
+    testing_wrapper("WaveAct", TestWaveAct, show=False)
+    testing_wrapper("FourierPositionalEmbedding", TestFourierPositionalEmbedding, show=False)
+    testing_wrapper("WaveletLayer", TestWaveletLayer, show=False)
+    testing_wrapper("SI_PINN", TestSI_PINN, show=True)

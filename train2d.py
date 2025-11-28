@@ -13,6 +13,7 @@ import pickle
 
 from config_gpu import config_gpu
 from pinn_base import PINN
+from si_pinn import SI_PINN
 from utils import (
     make_logger,
     write_logger,
@@ -21,6 +22,7 @@ from utils import (
     plot_loss_curve,
     plot_comparison,
     plot_comparison1d,
+    pdfs_to_gif
 )
 
 from tensorflow.python.framework.ops import disable_eager_execution
@@ -52,7 +54,7 @@ def main():
 
     var_names = settings["IN_VAR_NAMES"]
     func_names = settings["OUT_VAR_NAMES"]
-    model = PINN(var_names=var_names, func_names=func_names, **(model_args))
+    model = SI_PINN(var_names=var_names, func_names=func_names, **(model_args))
     model.init_custom_vars(
         dict_consts=settings["CUSTOM_CONSTS"],
         dict_funcs=settings["CUSTOM_FUNCS"],
@@ -170,13 +172,19 @@ def main():
             for func, title in zip(u_n, func_names):
 
                 plot_comparison(u_inf=func, title=title, **plot_commons)
-                
+
                 #    plot_comparison(u_inf=exact,title=title+'exact', **plot_commons)
                 #    plot_comparison(u_inf=(.abs(exact-func)), title=title+'diff', **plot_commons)
                 #    with open(title + str(epoch) + ".pickle", "wb") as handle:
                 #    pickle.dump(u_n, handle, protocol=pickle.HIGHEST_PROTOCOL)
             plot_loss_curve(epoch, losses_logs[:, 1:], labels=list(conds.keys()))
-            
+    for title in func_names:
+        pdfs_to_gif(["./results/comparison_" + title + "_" + str(ep) + ".pdf" \
+                     for ep in range(1000, (epoch // 1000 + 1) * 1000, 1000)],
+                     output_gif="./results/comparison_" + title + ".gif",
+                     duration=200,
+                     dpi=300,
+                     sort_files=False)
 if __name__ == "__main__":
     config_gpu(flag=0, verbose=True)
     main()
