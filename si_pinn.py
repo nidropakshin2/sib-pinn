@@ -1,4 +1,6 @@
 import os
+import warnings
+warnings.filterwarnings("ignore")
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import numpy as np
 import tensorflow as tf
@@ -62,21 +64,36 @@ class FourierPositionalEmbedding(tf.keras.layers.Layer):
     def __init__(self, f_in, f_hid, f_out, **kwargs):
         super().__init__(**kwargs)
 
+        self.f_in = f_in
         self.f_out = f_out
         self.f_hid = f_hid
-        self.fourier_emb = tf.keras.layers.Dense(self.f_out, activation="tanh")
-        self.pos_emb = tf.keras.layers.Dense(self.f_out)
         self.B = tf.random.uniform((f_in, self.f_hid))
 
     def build(self, f_in):
-        super().build(f_in)
+        self.fourier_emb = self.add_weight(
+            name="Fourier",
+            shape=(2 * self.f_hid, self.f_out),
+            initializer="random_normal",
+            trainable=True
+        )
+
+        self.pos_emb = self.add_weight(
+            name="Positional",
+            shape=(self.f_in, self.f_out),
+            initializer="random_normal",
+            trainable=True
+        )
+        
+        super().build(self.f_in)
 
     def call(self, x):
-        # tf.print(tf.shape(x), tf.shape(self.B))
+        
         z = 2 * np.pi * tf.matmul(x, self.B)
         f = tf.concat([tf.sin(z), tf.cos(z)], axis=-1)
-        emb_f = self.fourier_emb(f)
-        emb_p = self.pos_emb(x)
+        
+        emb_f = tf.matmul(f, self.fourier_emb)
+        emb_p = tf.matmul(x, self.pos_emb)
+        
         return emb_f + emb_p
     
     def compute_output_shape(self, input_shape):
@@ -97,7 +114,9 @@ def TestFourierPositionalEmbedding(show=False):
                 tf.print(y, grad, sep="\n")
         del tape
         return True
-    except:
+    except Exception as e:
+        print(f"\n{type(e).__name__}: {e}\n")
+        traceback.print_exc() 
         return False
 
 
@@ -154,7 +173,7 @@ class SI_PINN(tf.keras.Sequential):
         b_init="zeros",
         act="tanh",
         lr=1e-3,
-        dynamic_normalisation="dyn_norm",
+        dyn_norm="max_avg",
         beta=0.01,
         seed=42,
     ):
@@ -174,11 +193,12 @@ class SI_PINN(tf.keras.Sequential):
         self.seed = int(seed)
         self.f_scl = "minmax"  # "linear" / "minmax" / "mean"
         self.d_type = tf.float32
+        self.model_name = "si_pinn"
 
         self.act_func = self.init_act_func(self.act)
 
         # Note that it assumes that first element of var_names belongs to pde
-        self.dynamic_normalisation = dynamic_normalisation
+        self.dynamic_normalisation = dyn_norm
         if 0 <= beta and beta <= 1: 
             self.beta = beta
         else:
@@ -192,16 +212,16 @@ class SI_PINN(tf.keras.Sequential):
         # build a network
         self.add(FourierPositionalEmbedding(f_in=self.f_in, 
                                             f_hid=self.f_hid, 
-                                            f_out=self.f_out, 
+                                            f_out=self.f_hid, 
                                             input_shape=(self.f_in,)))
+        # self.add(WaveletLayer(f_in=self.f_hid, f_out=self.f_hid))
         for _ in range(self.depth):
             self.add(keras.layers.Dense(self.f_hid, activation=self.act_func))
-        self.add(WaveletLayer(f_in=self.f_hid, f_out=self.f_hid))
         self.add(keras.layers.Dense(self.f_out))
 
         # optimizer (overwrite the learning rate if necessary)
         self.lr = tf.keras.optimizers.schedules.ExponentialDecay(
-            initial_learning_rate=self.lr, decay_steps=1000, decay_rate=0.9
+            initial_learning_rate=self.lr, decay_steps=3000, decay_rate=0.7
         )
         
         #set_LBFGS_options()
@@ -298,7 +318,7 @@ class SI_PINN(tf.keras.Sequential):
     def normalize_losses(self, vec):
         return vec * self.gammas
 
-    def init_dynamical_normalisastion(self, num_of_losses):
+    def init_dynamical_normalisation(self, num_of_losses):
         self.gammas = tf.Variable(tf.ones(num_of_losses), tf.float32)
 
     @tf.autograph.experimental.do_not_convert
@@ -328,6 +348,10 @@ class SI_PINN(tf.keras.Sequential):
                 case "dyn_norm": 
                     grd = tf.norm(grd, axis=1)
                     gammas_cup = tf.reduce_max(grd) * tf.divide(tf.ones_like(grd), grd)
+                
+                case None:
+                    gammas_cup = self.gammas
+                
                 case _:
                     raise NotImplementedError(f"update_gammas has no dynamical normalisation option '{self.dynamic_normalisation}'")
             self.gammas.assign(self.beta * gammas_cup + (1 - self.beta) * self.gammas)
@@ -426,15 +450,13 @@ def TestSI_PINN(show=False):
 
         var_names = settings["IN_VAR_NAMES"]
         func_names = settings["OUT_VAR_NAMES"]
-        model = PINN(var_names=var_names, func_names=func_names, **(model_args))
+        model = SI_PINN(var_names=var_names, func_names=func_names, **(model_args))
         model.init_custom_vars(
             dict_consts=settings["CUSTOM_CONSTS"],
             dict_funcs=settings["CUSTOM_FUNCS"],
             var_names=var_names,
         )
 
-
-        model = SI_PINN(var_names=var_names, func_names=func_names, **(model_args))
         if show:
             tf.print(model.summary())
         return True

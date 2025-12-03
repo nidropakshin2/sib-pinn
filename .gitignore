@@ -3,6 +3,7 @@
 *.png
 
 results/
+grid_configs/
 
 *.py[cod]
 *$py.class

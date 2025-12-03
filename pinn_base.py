@@ -20,7 +20,7 @@ class PINN(tf.keras.Sequential):
         b_init="zeros",
         act="tanh",
         lr=1e-3,
-        dynamic_normalisation=None,
+        dyn_norm=None,
         beta=0.01,
         seed=42,
     ):
@@ -40,11 +40,12 @@ class PINN(tf.keras.Sequential):
         self.seed = int(seed)
         self.f_scl = "minmax"  # "linear" / "minmax" / "mean"
         self.d_type = tf.float32
+        self.model_name = "pinn"
 
         self.act_func = self.init_act_func(self.act)
 
         # Note that it assumes that first element of var_names belongs to pde
-        self.dynamic_normalisation = dynamic_normalisation
+        self.dynamic_normalisation = dyn_norm
         if 0 <= beta and beta <= 1: 
             self.beta = beta
         else:
@@ -160,7 +161,7 @@ class PINN(tf.keras.Sequential):
     def normalize_losses(self, vec):
         return vec * self.gammas
 
-    def init_dynamical_normalisastion(self, num_of_losses):
+    def init_dynamical_normalisation(self, num_of_losses):
         self.gammas = tf.Variable(tf.ones(num_of_losses), tf.float32)
 
     @tf.autograph.experimental.do_not_convert
@@ -177,19 +178,24 @@ class PINN(tf.keras.Sequential):
         
             grd = tf.concat([tf.reshape(v, [tf.shape(v)[0], -1]) for v in grads], axis=1)
             
-            # We assume here that the first grad is from PDE loss
+            # TODO We assume here that the first grad is from PDE loss
+            # Problem: might be several pdes
             match self.dynamic_normalisation:
                 case "max_avg":
                     grd_mean_abs = tf.reduce_mean(tf.abs(grd), axis=1)
                     gammas_cup = tf.reduce_max(tf.abs(grd[0])) * tf.divide(tf.ones_like(grd_mean_abs), self.gammas * grd_mean_abs)
 
                 case "inv_dir":
-                    grd = tf.reduce_std(grd, axis=1)
+                    grd = tf.math.reduce_std(grd, axis=1)
                     gammas_cup = tf.reduce_max(grd) * tf.divide(tf.ones_like(grd), grd)
         
                 case "dyn_norm": 
                     grd = tf.norm(grd, axis=1)
                     gammas_cup = tf.reduce_max(grd) * tf.divide(tf.ones_like(grd), grd)
+                
+                case None:
+                    gammas_cup = self.gammas
+
                 case _:
                     raise NotImplementedError(f"update_gammas has no dynamical normalisation option '{self.dynamic_normalisation}'")
             self.gammas.assign(self.beta * gammas_cup + (1 - self.beta) * self.gammas)

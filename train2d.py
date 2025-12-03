@@ -32,7 +32,7 @@ from tensorflow.python.framework.ops import disable_eager_execution
 #filename = "./settings/burgers.yaml"
 #filename = "./settings/sir-mfg-comunal.yaml"
 filename = "./settings/sir-controlled (Copy).yaml"
-
+# filename = "./settings/simple-sir.yaml"
 #filename = "./settings/laplas-data.yaml"
 
 def main():
@@ -186,5 +186,5 @@ def main():
                      dpi=300,
                      sort_files=False)
 if __name__ == "__main__":
-    config_gpu(flag=0, verbose=True)
+    config_gpu(flag=-1, verbose=True)
     main()

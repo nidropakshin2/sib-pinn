@@ -16,7 +16,10 @@ import yaml
 
 from pdf2image import convert_from_path
 from PIL import Image
-from typing import List, Union
+from typing import List, Union, Dict, Any
+import traceback
+import copy
+
 
 def find_all_words(string):
     _len = len(string)
@@ -58,6 +61,9 @@ def gen_points(num, bounds, n_vars=None):
         points[i] = tf.random.uniform(
             (int(num), 1), bounds[i][0], bounds[i][1], dtype=tf.float32
         )
+        # points[i] = tf.expand_dims(tf.linspace(
+        #     start=bounds[i][0], stop=bounds[i][1], num=int(num)
+        # ), -1)
     return tf.Variable(tf.concat(points, axis=1))
 
 
@@ -79,21 +85,22 @@ def gen_condition(cond_dict, model_args, **kwargs):
         else:
             x, c = default_xc()
     except KeyError:
-            x, c = default_xc()
-    x = x*2/(model_args['in_ub']-model_args['in_lb']) - 1 #normalization
+        x, c = default_xc()
+    
+    # x = x * 2 / (model_args['in_ub'] - model_args['in_lb']) - 1
     eq_string = line_parser("( " + cond_dict["eq_string"] + " ,)", **kwargs)
     if "d/d" in cond_dict["eq_string"]:
         compute_grads = True
     else:
         compute_grads = False
-    print(eq_string)
+    # print(eq_string)
     eq_string = compile(eq_string, "<string>", "eval")
     return (x, c, eq_string, compute_grads)
 
 def eval_dict(d, kwargs={}, recursion=0):
     if recursion == 0:
         for key in d.keys():
-            if key not in ["eq_string", "act", "right_side", "filename"]:
+            if key not in ["eq_string", "act", "right_side", "filename", "dyn_norm"]:
                 if isinstance(d[key], numbers.Number):
                     #d[key] = tf.cast(d[key], tf.float32)
                     pass
@@ -102,7 +109,7 @@ def eval_dict(d, kwargs={}, recursion=0):
         return d
     else:
         for key in d.keys():
-            if key not in ["eq_string", "act", "right_side"]:
+            if key not in ["eq_string", "act", "right_side", "dyn_norm"]:
                 d[key] = eval_dict(d[key], kwargs | d, recursion - 1)
         return d
 
@@ -159,13 +166,15 @@ def line_parser(eq_string, func_names, var_names=default_var_names, **kwargs):
     return res
 
 
-def make_logger(add_data=None):
+def make_logger(add_data=None, output_dir=""):
     now = datetime.datetime.now()
     now = now.strftime("%Y_%m_%d_%H_%M_%S")
 
-    f_path = "./results/"
+    
+    f_path = "./results" + output_dir + "/"
     f_name = now + ".txt"
     path = os.path.join(f_path, f_name)
+    os.makedirs(f_path, exist_ok=True)
 
     with open(path, mode="a") as f:
         print(add_data, file=f)
@@ -201,6 +210,8 @@ def plot_comparison1d(
     xlabel,
     ylabel,
     title="",
+    file_extension="pdf",
+    output_dir=""
 ):
 
 # fig, ax = plt.subplots(figsize=(4, 4))
@@ -213,10 +224,12 @@ def plot_comparison1d(
     plt.xlabel(xlabel)
     #plt.title("inference")
 
-    plt.savefig("./results/comparison_" + title + "_" + str(epoch) + ".pdf", dpi=300)
+    os.makedirs("./results" + output_dir, exist_ok=True)
+
+    plt.savefig("./results" + output_dir + "/comparison_" + title + "_" + str(epoch) + "." + file_extension, dpi=300)
     plt.clf()
     plt.close()
-    with open('./results/data_'+ title + "_" + str(epoch) + ".txt"	, 'wb') as f:
+    with open('./results' + output_dir + '/data_'+ title + "_" + str(epoch) + ".txt"	, 'wb') as f:
         pkl.dump((x,y,u_inf), f)	
         #pkl.dump(data, f)
         #	pkl.dump(data, f)
@@ -242,6 +255,8 @@ def plot_comparison(
     xlabel,
     ylabel,
     title="",
+    file_extension="pdf",
+    output_dir=""
 ):
     # fig, ax = plt.subplots(figsize=(4, 4))
     # ax.set_xticks
@@ -263,10 +278,12 @@ def plot_comparison(
     plt.ylabel(ylabel)
     #plt.title("inference")
 
-    plt.savefig("./results/comparison_" + title + "_" + str(epoch) + ".pdf", dpi=300)
+    os.makedirs("./results" + output_dir, exist_ok=True)
+
+    plt.savefig("./results" + output_dir + "/comparison_" + title + "_" + str(epoch) + "." + file_extension, dpi=300)
     plt.clf()
     plt.close()
-    with open('./results/data_'+ title + "_" + str(epoch) + ".txt"	, 'wb') as f:
+    with open('./results' + output_dir + '/data_'+ title + "_" + str(epoch) + ".txt"	, 'wb') as f:
         pkl.dump((x,y,u_inf), f)	
         #pkl.dump(data, f)
         #	pkl.dump(data, f)
@@ -274,10 +291,15 @@ def plot_comparison(
         #print(str(y), file=f)
         #print(str(u_inf), file=f)
        
-def plot_loss_curve(epoch, logs, labels):
+def plot_loss_curve(epoch, 
+                    logs, 
+                    labels, 
+                    file_extension="pdf",
+                    output_dir=""):
     epoch_log = logs[0]
     plt.figure(figsize=(4, 4))
-    for log, label in zip(logs[1:], labels[1:]):
+    # print(logs[:, 1:], labels)
+    for log, label in zip(logs, labels):
         # print("utils: plot_loss_curve: loss logs ", log)
         plt.plot(np.arange(len(log)), log, ls="-", alpha=0.7, label=label)  # , c="k")
     # plt.plot(epoch_log, loss_pde_log, ls="--", alpha=.3, label="loss_pde", c="tab:blue")
@@ -290,7 +312,10 @@ def plot_loss_curve(epoch, logs, labels):
     plt.yscale("log")
     plt.grid(alpha=0.5)
     plt.tight_layout()
-    plt.savefig("./results/loss_curve_" + str(epoch) + ".pdf", dpi=300)
+    
+    os.makedirs("./results" + output_dir, exist_ok=True)
+    
+    plt.savefig("./results" + output_dir + "/loss_curve_" + str(epoch) + "." + file_extension, dpi=300)
     plt.clf()
     plt.close()
 
@@ -298,20 +323,21 @@ def plot_loss_curve(epoch, logs, labels):
 Функция для визуализации процесса обучения в виде gif-анимации 
 """
 
-def pdfs_to_gif(
-    pdf_files: Union[str, List[str]],
+def to_gif(
+    files: Union[str, List[str]],
     output_gif: str = "animation.gif",
     duration: int = 500,
     loop: int = 0,
     dpi: int = 150,
     use_pdftocairo: bool = False,
-    sort_files: bool = True
+    sort_files: bool = True,
+    log: bool = False
 ) -> None:
     """
-    Конвертирует несколько PDF-файлов в GIF-анимацию.
+    Конвертирует несколько файлов (pdf, jpg, png) в GIF-анимацию.
     
     Args:
-        pdf_files: Путь к PDF-файлу или список путей к PDF-файлам
+        files: Путь к файлу или список путей к файлам
         output_gif: Имя выходного GIF-файла
         duration: Длительность каждого кадра в миллисекундах
         loop: Количество циклов (0 = бесконечно)
@@ -321,34 +347,62 @@ def pdfs_to_gif(
     """
     
     # Если передан один файл, преобразуем в список
-    if isinstance(pdf_files, str):
-        pdf_files = [pdf_files]
+    if isinstance(files, str):
+        files = [files]
     
     # Сортируем файлы по имени, если требуется
     if sort_files:
-        pdf_files = sorted(pdf_files)
+        files = sorted(files)
     
-    # Конвертируем каждый PDF в изображения и собираем все кадры
+    # Конвертируем каждый файл в изображение и собираем все кадры
     frames = []
-    for pdf_file in pdf_files:
-        if not os.path.exists(pdf_file):
-            print(f"Предупреждение: файл {pdf_file} не найден, пропускаем")
+    for file in files:
+        if not os.path.exists(file):
+            if log:
+                print(f"Предупреждение: файл {file} не найден, пропускаем")
             continue
             
         try:
-            images = convert_from_path(
-                pdf_file, 
-                dpi=dpi, 
-                use_pdftocairo=use_pdftocairo
-            )
-            frames.extend(images)
-            print(f"Обработан {pdf_file} - добавлено {len(images)} кадров")
+            image_extensions = ['jpg', 'jpeg', 'png', 'bmp', 'gif', 'tiff', 'webp']
+            file_ext = file.split(".")[-1]
+            if file_ext == "pdf":
+                img = convert_from_path(
+                    file, 
+                    dpi=dpi, 
+                    use_pdftocairo=use_pdftocairo
+                )
+                frames.append(img)
+                if log: 
+                    print(f"Обработан {file} - добавлен 1 кадр")
+            elif file_ext in image_extensions:
+                # Обработка файлов изображений
+                img = Image.open(file)
+                
+                # Конвертируем в RGB, если нужно (GIF не поддерживает RGBA)
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    # Если есть альфа-канал, создаем белый фон
+                    if img.mode in ('RGBA', 'LA'):
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'RGBA':
+                            background.paste(img, mask=img.split()[-1])
+                        else:
+                            background.paste(img, mask=img.getchannel('A'))
+                        img = background
+                    else:
+                        img = img.convert('RGB')
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                frames.append(img)
+                if log:
+                    print(f"Обработан {file} - добавлен 1 кадр")
+            else:
+                raise NotImplementedError(f"Расширение .{file_ext} не поддерживается")
         except Exception as e:
-            print(f"Ошибка при обработке {pdf_file}: {e}")
+            print(f"Ошибка при обработке {file}: {e}")
             continue
     
     if not frames:
-        print("Ошибка: не удалось обработать ни одного PDF-файла")
+        print("Ошибка: не удалось обработать ни одного файла")
         return
     
     # Сохраняем как GIF
@@ -361,9 +415,133 @@ def pdfs_to_gif(
             loop=loop,
             optimize=True  # Оптимизация размера файла
         )
-        print(f"Успешно создан GIF: {output_gif}")
-        print(f"Общее количество кадров: {len(frames)}")
-        print(f"Размер каждого кадра: {duration} мс")
+        if log:
+            print(f"Успешно создан GIF: {output_gif}")
+            print(f"Общее количество кадров: {len(frames)}")
+            print(f"Размер каждого кадра: {duration} мс")
         
     except Exception as e:
         print(f"Ошибка при создании GIF: {e}")
+
+
+def read_yaml(file_path: str) -> Dict[str, Any]:
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+
+def write_yaml(data: Dict[str, Any], file_path: str) -> None:
+    with open(file_path, 'w', encoding='utf-8') as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+def modify_model_parameters(
+    base_config: Dict[str, Any],
+    parameter_grid: Dict[str, List[Any]],
+    output_dir: str = "configs",
+    log: bool = False
+) -> List[str]:
+    """
+    Создает несколько конфигурационных файлов, изменяя параметры модели.
+    
+    Args:
+        base_config: Базовый конфигурационный словарь
+        parameter_grid: Сетка параметров для перебора, например:
+            {
+                'f_hid': [16, 32, 64],
+                'depth': [2, 4, 6],
+                'lr': [0.001, 0.0001]
+            }
+        output_dir: Директория для сохранения файлов
+        
+    Returns:
+        Список путей к созданным файлам
+    """
+    
+    # Создаем директорию для результатов, если она не существует
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Собираем ключи параметров
+    param_keys = list(parameter_grid.keys())
+    
+    # Генерируем все комбинации параметров
+    from itertools import product
+    
+    created_files = []
+    param_combinations = list(product(*parameter_grid.values()))
+    
+
+    for i, combination in enumerate(param_combinations):
+        # Создаем копию базовой конфигурации
+        new_config = copy.deepcopy(base_config)
+        
+        # Обновляем параметры модели
+        for key, value in zip(param_keys, combination):
+            if 'MODEL' in new_config:
+                new_config['MODEL'][key] = value
+        
+        # Создаем имя файла на основе параметров
+        filename_parts = []
+        for key, value in zip(param_keys, combination):
+            # Преобразуем значение в строку, подходящую для имени файла
+            value_str = str(value).replace('.', '_').replace('[', '').replace(']', '')
+            filename_parts.append(f"{key}_{value_str}")
+        
+        filename = f"config_{'_'.join(filename_parts)}.yaml"
+        file_path = os.path.join(output_dir, filename)
+        
+        # Записываем новый конфигурационный файл
+        write_yaml(new_config, file_path)
+        created_files.append(file_path)
+        
+        if log:
+            print(f"Создан файл: {filename}")
+    
+    return created_files
+
+def create_specific_configs(
+    base_file: str,
+    config_variants: List[Dict[str, Any]],
+    output_dir: str = "specific_configs"
+) -> List[str]:
+    """
+    Создает конкретные конфигурационные файлы на основе списка вариантов.
+    
+    Args:
+        base_file: Путь к базовому YAML файлу
+        config_variants: Список словарей с изменениями для MODEL
+        output_dir: Директория для сохранения файлов
+        
+    Returns:
+        Список путей к созданным файлам
+    """
+    
+    # Читаем базовый конфиг
+    base_config = read_yaml(base_file)
+    
+    # Создаем директорию для результатов
+    os.makedirs(output_dir, exist_ok=True)
+    
+    created_files = []
+    
+    for i, variant in enumerate(config_variants):
+        # Создаем копию базовой конфигурации
+        new_config = copy.deepcopy(base_config)
+        
+        # Применяем изменения к разделу MODEL
+        for key, value in variant.items():
+            if 'MODEL' in new_config:
+                new_config['MODEL'][key] = value
+        
+        # Создаем имя файла
+        if 'name' in variant:
+            filename = f"config_{variant['name']}.yaml"
+        else:
+            filename = f"config_variant_{i+1}.yaml"
+        
+        file_path = os.path.join(output_dir, filename)
+        
+        # Записываем новый конфигурационный файл
+        write_yaml(new_config, file_path)
+        created_files.append(file_path)
+
+    return created_files

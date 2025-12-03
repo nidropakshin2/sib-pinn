@@ -3,12 +3,14 @@
 training
 ********************************************************************************
 """
+import os
+# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import time
 import yaml
 import numpy as np 
 import tensorflow as tf
 import pickle
-
+from tqdm import tqdm
 
 from config_gpu import config_gpu
 from pinn_base import PINN
@@ -19,26 +21,18 @@ from utils import (
     eval_dict,
     gen_condition,
     plot_loss_curve,
-    plot_comparison,
-    pdfs_to_gif,
     plot_comparison1d,
+    to_gif
 )
 
-from tensorflow.python.framework.ops import disable_eager_execution
 
-#disable_eager_execution()
-
-# filename = "./settings/laplas-data.yaml"
-filename = "./settings/simple-sir.yaml"
-
-
-def main():
+def train1d(filename, model_class, output_dir=""):
     # read settings
     with open(filename, mode="r") as file:
         settings = yaml.safe_load(file)
 
     # run hyperparameters args
-    logger_path = make_logger("seed: in model")
+    logger_path = make_logger("seed: in model", output_dir=output_dir)
     args = eval_dict(settings["ARGS"])
 
     # ======model=======
@@ -51,25 +45,20 @@ def main():
 
     var_names = settings["IN_VAR_NAMES"]
     func_names = settings["OUT_VAR_NAMES"]
-    model = SI_PINN(var_names=var_names, func_names=func_names, **(model_args))
+    
+    model = model_class(var_names=var_names, func_names=func_names, **(model_args))
     model.init_custom_vars(
         dict_consts=settings["CUSTOM_CONSTS"],
         dict_funcs=settings["CUSTOM_FUNCS"],
         var_names=var_names,
     )
 
-    print("INIT DONE")
+    # print("INIT DONE")
 
     in_lb = model_args["in_lb"]
     tmin = in_lb[0]
-    #xmin = in_lb[1]
     in_ub = model_args["in_ub"]
     tmax = in_ub[0]
-    #xmax = in_ub[1]
-
-    # tmin, x1min, x2min = in_lb = model_args["in_lb"]
-    # tmax, x1max, x2max = in_ub = model_args["in_ub"]
-
     # ======conditions=======
 
     conds = eval_dict(settings["CONDS"], locals() | {"tf": tf} | model.custom_vars, 1)
@@ -84,9 +73,9 @@ def main():
     ]
     cond_string = compile("(" + "".join(cond_string) + ")", '<string>', 'eval')
     
-    model.init_dynamical_normalisastion(len(conditions))
+    model.init_dynamical_normalisation(len(conditions))
 
-    # ======outputs=======
+    # # ======outputs=======
 
     ns = eval_dict(settings["NS"])
     _x = [0] * len(var_names)
@@ -95,11 +84,9 @@ def main():
     _x = (tf.meshgrid(*_x))
 
     
-    #x = tf.cast(np.empty((len(_x), int(np.prod(_x.shape)))), dtype=tf.float32)
     x = [0]*len(_x)
     for i in range(len(var_names)):
-        x[i] = tf.reshape(_x[i],(-1,1)) #tf.cast(_x[i].reshape(-1, 1), dtype=tf.float32)
-    #x = tf.reshape(_x,()
+        x[i] = tf.reshape(_x[i],(-1,1))
     x_ref = tf.transpose(tf.cast(x, dtype=tf.float32))[0]
     u_ref = tf.cast(np.zeros(ns['nx']).reshape(-1, 1), dtype=tf.float32)
     exact = tf.cast(model.custom_vars["exact"](x_ref), dtype=tf.float32)
@@ -113,22 +100,21 @@ def main():
     loss_save = tf.constant(1e20)
     t0 = time.perf_counter()
 
-    #cond_string_here = [
-    #    "model.loss_(*conditions[" + str(i) + "])," for i in range(len(conditions))
-    #]
-    #cond_string_here = "(" + "".join(cond_string_here) + ")"
+    cond_string_here = [
+       "model.loss_(*conditions[" + str(i) + "])," for i in range(len(conditions))
+    ]
+    cond_string_here = "(" + "".join(cond_string_here) + ")"
 
-    print("START TRAINING")
-    for epoch in range(1, int(args["epochs"]) + 1):
+    # print("START TRAINING")
+    for epoch in tqdm(range(1, int(args["epochs"]) + 1)):
         # gradient descent
         loss_glb, losses = model.train(conditions, cond_string)
-        #result_l = model.train_lbfgs(conditions, cond_string)
         
         losses_logs = np.append(losses_logs, np.expand_dims(losses, axis=0).T, axis=1)
-        #print(result_l)# log
+        
         t1 = time.perf_counter()
         elps = t1 - t0
-        print(elps)
+        # print(elps)
         # print(loss_glb)
         losses = dict(zip(conds.keys(), losses))
         logger_data = [key + f": {losses[key]:.3e}, " for key in losses.keys()]
@@ -136,17 +122,8 @@ def main():
             logger_data
         )
         write_logger(logger_path, logger_data)
-        if True:#epoch % 200 == 0:
-            print(logger_data)
+        # print(logger_data)
             
-        if epoch % 250 == 0:
-            print(">>>>> saving")
-            w_ending = '.weights.h5'
-            #model.save_weights("./saved_weights/weights_ep" + str(epoch)+w_ending)
-            #if loss_glb < loss_save:
-            #    model.save_weights("./best_weights/best_weights"+w_ending)
-                #loss_save = loss_glb
-
         # early stopping
         if loss_glb < loss_best * 1.5:
             loss_best = loss_glb
@@ -159,9 +136,10 @@ def main():
 
         # monitor
         if epoch % 1000 == 0:
+            file_extension = "jpg"
             u_ = model(x_ref)
             u_n = u_.numpy().transpose()
-            print("Estimation error ", np.max(np.abs(exact - u_[:, 0])))
+            # print("Estimation error ", np.max(np.abs(exact - u_[:, 0])))
             plot_commons = {
                 "epoch": epoch,
                 "x": x_ref[:, 0],
@@ -170,21 +148,25 @@ def main():
                 "ylabel": None,#var_names[1],
             }
             for func, title in zip(u_n, func_names):
-                #plot_comparison(u_inf=func, title=title, **plot_commons)
-                plot_comparison1d(u_inf=func, title=title, file_extension="jpg", **plot_commons)
-                #    plot_comparison(u_inf=exact,title=title+'exact', **plot_commons)
-                #    plot_comparison(u_inf=(.abs(exact-func)), title=title+'diff', **plot_commons)
-                #    with open(title + str(epoch) + ".pickle", "wb") as handle:
-                #    pickle.dump(u_n, handle, protocol=pickle.HIGHEST_PROTOCOL)
-            plot_loss_curve(epoch, losses_logs[:, 1:], labels=list(conds.keys()))
+                plot_comparison1d(u_inf=func, 
+                                  title=title, 
+                                  file_extension=file_extension, 
+                                  output_dir=output_dir,
+                                  **plot_commons)
+            
+            plot_loss_curve(epoch, 
+                            losses_logs[:, 1:], 
+                            labels=list(conds.keys()), 
+                            file_extension=file_extension,
+                            output_dir=output_dir,)
     for title in func_names:
-        pdfs_to_gif(["./results/comparison_" + title + "_" + str(ep) + ".pdf" \
+        to_gif(["./results" + output_dir + "/comparison_" + title + "_" + str(ep) + "." + file_extension \
                      for ep in range(1000, (epoch // 1000 + 1) * 1000, 1000)],
-                     output_gif="./results/comparison_" + title + ".gif",
+                     output_gif="./results" + output_dir + "/comparison_" + title + ".gif",
                      duration=150,
                      dpi=300,
                      sort_files=False)
             
 if __name__ == "__main__":
-    config_gpu(flag=0, verbose=True)
-    main()
+    config_gpu(flag=-1, verbose=True)
+    train1d(filename="./settings/simple-sir.yaml", model_class=SI_PINN, output_dir="/simple-sir/si_pinn")

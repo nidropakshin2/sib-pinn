@@ -1,0 +1,46 @@
+ARGS:
+  epochs: 15000
+  batch_size: -1
+  patience: 2000
+
+MODEL:
+  f_hid: 4
+  depth: 4
+  in_lb: '[-1.]'
+  in_ub: '[1.]'
+  act: tanh
+  seed: 42
+  lr: 0.001
+  beta: 0.01
+  dyn_norm: 
+  
+NS:
+  nx: [500]
+
+IN_VAR_NAMES:
+ [t]
+
+OUT_VAR_NAMES:
+ [S, I]
+
+CUSTOM_CONSTS:
+  beta: 20.
+  gamma: 2.
+  S_0: 0.9
+
+CUSTOM_FUNCS:
+  exact: t*0
+
+CONDS:
+  pde:
+    eq_string: ' (d/dt) S + beta * S * I , 
+                 (d/dt) I - beta * S * I + gamma * I'
+    right_side: 0*vars[:, 0], 0*vars[:, 0] 
+    point_area: '[[tmin, tmax]]'
+    N: 1e5
+  
+  initial:
+     eq_string: S , I
+     right_side: 0*vars[:, 0] + S_0 , 0*vars[:, 0] + 1 - S_0
+     point_area: '[[tmin, tmin]]'
+     N: 1e2
